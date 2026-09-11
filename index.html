@@ -151,8 +151,50 @@ function RegisterPanel({ slots, blackoutSet, announcement }) {
   const [submitting, setSubmitting] = useState(false);
   const [status, setStatus] = useState(null); // {type:'ok'|'err', msg}
   const [priorBookings, setPriorBookings] = useState([]);
+  const [autoJumped, setAutoJumped] = useState(false);
+  const autoCheckedRef = React.useRef(false);
 
   const isBlackout = blackoutSet.has(date);
+
+  // 開頁自動搵最近未full嘅日子(未來60日內),幫客人跳去嗰日
+  useEffect(() => {
+    if (autoCheckedRef.current) return;
+    if (!slots || slots.length === 0) return;
+    autoCheckedRef.current = true;
+
+    async function findNextAvailable() {
+      const startStr = todayStr();
+      const endD = new Date();
+      endD.setDate(endD.getDate() + 60);
+      const endStr = ymd(endD);
+      try {
+        const snap = await db.collection('bookings')
+          .where('date', '>=', startStr)
+          .where('date', '<=', endStr)
+          .get();
+        const countByDate = {};
+        snap.forEach(doc => {
+          const d = doc.data();
+          if (d.status === 'cancelled') return;
+          countByDate[d.date] = (countByDate[d.date] || 0) + 1;
+        });
+        let cur = new Date(startStr + 'T00:00:00');
+        const limit = new Date(endStr + 'T00:00:00');
+        while (cur <= limit) {
+          const dstr = ymd(cur);
+          if (!blackoutSet.has(dstr) && (countByDate[dstr] || 0) < slots.length) {
+            setDate(dstr);
+            setAutoJumped(dstr !== startStr);
+            return;
+          }
+          cur.setDate(cur.getDate() + 1);
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }
+    findNextAvailable();
+  }, [slots, blackoutSet]);
 
   useEffect(() => {
     setSelectedSlot("");
@@ -273,6 +315,9 @@ function RegisterPanel({ slots, blackoutSet, announcement }) {
           className="w-full bg-ink2 amulet-border rounded-lg px-3 py-2.5 text-paper outline-none focus:ring-1 focus:ring-gold" />
         {isBlackout && (
           <div className="text-xs text-vermilion mt-1.5">此日暫停接受登記,請另選日子。</div>
+        )}
+        {!isBlackout && autoJumped && date && (
+          <div className="text-xs text-goldLight/70 mt-1.5">已為你揀咗最近有位嘅日子,可自行更改。</div>
         )}
       </div>
 
@@ -660,12 +705,12 @@ function AdminBookings() {
     <div className="space-y-6">
       <div className="amulet-border bg-ink2/50 rounded-lg p-4 space-y-2">
         <div className="text-xs text-goldLight/80">搜尋客人(電話)睇返所有預約記錄</div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 min-w-0">
           <input value={searchPhone} onChange={e => setSearchPhone(e.target.value.replace(/[^\d]/g,''))}
             placeholder="輸入電話" inputMode="numeric"
-            className="flex-1 bg-ink2 amulet-border rounded-lg px-3 py-2 text-sm text-paper outline-none" />
+            className="flex-1 min-w-0 bg-ink2 amulet-border rounded-lg px-3 py-2 text-sm text-paper outline-none" />
           <button onClick={searchByPhone} disabled={searching}
-            className="text-sm bg-vermilion text-paper rounded-lg px-4 py-2 border border-gold/50 whitespace-nowrap">
+            className="shrink-0 text-sm bg-vermilion text-paper rounded-lg px-4 py-2 border border-gold/50 whitespace-nowrap">
             {searching ? '搜尋緊…' : '搜尋'}
           </button>
         </div>
@@ -813,13 +858,13 @@ function AdminSettings() {
 
       <div>
         <div className="text-xs text-goldLight/80 mb-2">Lock日期(唔接受登記,可以揀一個範圍)</div>
-        <div className="flex gap-2 mb-2 items-center">
+        <div className="flex flex-wrap gap-2 mb-2 items-center">
           <input type="date" value={blackoutStart} onChange={e => setBlackoutStart(e.target.value)}
-            className="flex-1 bg-ink2 amulet-border rounded-lg px-3 py-2 text-sm text-paper outline-none" placeholder="開始" />
+            className="flex-1 min-w-[9rem] bg-ink2 amulet-border rounded-lg px-3 py-2 text-sm text-paper outline-none" placeholder="開始" />
           <span className="text-ash text-xs">至</span>
           <input type="date" value={blackoutEnd} onChange={e => setBlackoutEnd(e.target.value)}
-            className="flex-1 bg-ink2 amulet-border rounded-lg px-3 py-2 text-sm text-paper outline-none" placeholder="結束(可留空即單日)" />
-          <button onClick={addBlackout} className="text-sm bg-vermilion text-paper rounded-lg px-4 py-2 border border-gold/50 whitespace-nowrap">Lock</button>
+            className="flex-1 min-w-[9rem] bg-ink2 amulet-border rounded-lg px-3 py-2 text-sm text-paper outline-none" placeholder="結束(可留空即單日)" />
+          <button onClick={addBlackout} className="shrink-0 w-full sm:w-auto text-sm bg-vermilion text-paper rounded-lg px-4 py-2 border border-gold/50 whitespace-nowrap">Lock</button>
         </div>
         <div className="space-y-1.5">
           {blackout.map(d => (
