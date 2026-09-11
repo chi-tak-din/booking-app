@@ -1,0 +1,1013 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>慈德殿 — 網上登記</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@500;700;900&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          ink: '#1C1211',
+          ink2: '#241816',
+          ink3: '#2E201C',
+          vermilion: '#A6342A',
+          vermilionDark: '#7E2620',
+          gold: '#C9A227',
+          goldLight: '#E8C766',
+          paper: '#EFE3C8',
+          ash: '#8B7355'
+        },
+        fontFamily: {
+          serifTC: ['"Noto Serif TC"', 'serif'],
+          sansTC: ['"Noto Sans TC"', 'sans-serif']
+        }
+      }
+    }
+  }
+</script>
+
+<style>
+  body { background-color: #1C1211; }
+  .seal {
+    background: radial-gradient(circle at 35% 30%, #B23B2F, #7E2620 75%);
+    box-shadow: 0 0 0 3px #C9A227, 0 0 0 5px #1C1211, 0 8px 24px rgba(0,0,0,0.5);
+  }
+  .amulet-border {
+    border: 1px solid #C9A227;
+    box-shadow: 0 0 0 1px rgba(201,162,39,0.25), inset 0 0 0 1px rgba(201,162,39,0.15);
+  }
+  .slot-pill {
+    transition: all 0.15s ease;
+  }
+  ::selection { background: #C9A227; color: #1C1211; }
+  input[type="date"]::-webkit-calendar-picker-indicator {
+    filter: invert(0.8) sepia(1) saturate(3) hue-rotate(0deg);
+    opacity: 0.8;
+  }
+</style>
+</head>
+<body class="min-h-screen font-sansTC text-paper">
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCHPLRVsi7TV_AzVDTcRcKH5CC6DQLcGkE",
+  authDomain: "chi-tak-din-booking.firebaseapp.com",
+  projectId: "chi-tak-din-booking",
+  storageBucket: "chi-tak-din-booking.firebasestorage.app",
+  messagingSenderId: "640174850436",
+  appId: "1:640174850436:web:12cced7ab941f4e4b79dd1"
+};
+
+const app = firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+const auth = firebase.auth();
+
+const DEFAULT_SLOTS = ["19:00","19:30","20:00","20:30","21:00","21:30"];
+const ASCENSION_SLOTS = ["19:00","19:45","20:30","21:15"];
+
+function ymd(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,'0');
+  const day = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
+
+function todayStr() { return ymd(new Date()); }
+
+function Seal() {
+  return (
+    <div className="seal w-24 h-24 md:w-28 md:h-28 rounded-2xl rotate-3 flex items-center justify-center shrink-0">
+      <span className="font-serifTC font-black text-paper text-5xl md:text-6xl -rotate-3 select-none">慈</span>
+    </div>
+  );
+}
+
+function SlotGrid({ slots, bookedSlots, selected, onSelect, disabled }) {
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      {slots.map(s => {
+        const isBooked = bookedSlots.has(s);
+        const isSelected = selected === s;
+        return (
+          <button
+            type="button"
+            key={s}
+            disabled={disabled || isBooked}
+            onClick={() => onSelect(s)}
+            className={
+              "slot-pill rounded-lg py-2.5 text-sm font-medium border " +
+              (isBooked
+                ? "border-ash/40 text-ash/60 bg-ink2/60 cursor-not-allowed line-through"
+                : isSelected
+                ? "border-gold bg-vermilion text-paper"
+                : "border-ash/50 text-paper hover:border-gold hover:text-goldLight bg-ink2")
+            }
+          >
+            {s}
+            {isBooked && <div className="text-[10px] mt-0.5 tracking-wide">已滿</div>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function RegisterPanel({ slots, blackoutSet, announcement }) {
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [date, setDate] = useState(todayStr());
+  const [selectedSlot, setSelectedSlot] = useState("");
+  const [bookedSlots, setBookedSlots] = useState(new Set());
+  const [submitting, setSubmitting] = useState(false);
+  const [status, setStatus] = useState(null); // {type:'ok'|'err', msg}
+  const [priorBookings, setPriorBookings] = useState([]);
+
+  const isBlackout = blackoutSet.has(date);
+
+  useEffect(() => {
+    setSelectedSlot("");
+    setStatus(null);
+    if (!date) return;
+    const unsub = db.collection('bookings')
+      .where('date', '==', date)
+      .onSnapshot(snap => {
+        const s = new Set();
+        snap.forEach(doc => {
+          const d = doc.data();
+          if (d.status !== 'cancelled') s.add(d.slot);
+        });
+        setBookedSlots(s);
+      }, err => console.error(err));
+    return () => unsub();
+  }, [date]);
+
+  // 電話有齊 8 位數字時,提示佢有無登記過(唔阻止,純提示)
+  useEffect(() => {
+    const p = phone.trim();
+    if (p.length < 8) { setPriorBookings([]); return; }
+    let active = true;
+    db.collection('bookings').where('phone', '==', p).get().then(snap => {
+      if (!active) return;
+      const list = [];
+      snap.forEach(doc => {
+        const d = doc.data();
+        if (d.status !== 'cancelled') list.push(d);
+      });
+      list.sort((a,b) => (a.date+a.slot) < (b.date+b.slot) ? 1 : -1);
+      setPriorBookings(list);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [phone]);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setStatus(null);
+
+    if (!name.trim() || !phone.trim() || !date || !selectedSlot) {
+      setStatus({ type: 'err', msg: '請填妥姓、電話、日期同時段。' });
+      return;
+    }
+    if (isBlackout) {
+      setStatus({ type: 'err', msg: '呢一日暫時未開放登記,請選擇其他日子。' });
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await db.runTransaction(async (t) => {
+        const lockRef = db.collection('slotLocks').doc(`${date}_${selectedSlot}`);
+        const lockSnap = await t.get(lockRef);
+        if (lockSnap.exists) {
+          throw new Error('SLOT_TAKEN');
+        }
+        const ref = db.collection('bookings').doc();
+        t.set(ref, {
+          name: name.trim(),
+          phone: phone.trim(),
+          date,
+          slot: selectedSlot,
+          status: 'booked',
+          checkedIn: false,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        t.set(lockRef, {
+          bookingId: ref.id,
+          name: name.trim(),
+          phone: phone.trim(),
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      });
+      setStatus({ type: 'ok', msg: `登記成功:${date} ${selectedSlot}` });
+      setSelectedSlot("");
+    } catch (err) {
+      if (err.message === 'SLOT_TAKEN') {
+        setStatus({ type: 'err', msg: '呢個時段啱啱畀人登記咗,請揀過另一個時段。' });
+      } else {
+        console.error(err);
+        setStatus({ type: 'err', msg: `登記失敗:${err.code || err.message || '未知原因'}(截圖呢句畀開發者睇)` });
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-5">
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs text-goldLight/80 mb-1">姓</label>
+          <input value={name} onChange={e => setName(e.target.value)}
+            className="w-full bg-ink2 amulet-border rounded-lg px-3 py-2.5 text-paper placeholder-ash/60 outline-none focus:ring-1 focus:ring-gold"
+            placeholder="例:陳先生" />
+        </div>
+        <div>
+          <label className="block text-xs text-goldLight/80 mb-1">電話</label>
+          <input value={phone} onChange={e => setPhone(e.target.value.replace(/[^\d]/g,''))}
+            inputMode="numeric"
+            className="w-full bg-ink2 amulet-border rounded-lg px-3 py-2.5 text-paper placeholder-ash/60 outline-none focus:ring-1 focus:ring-gold"
+            placeholder="例:91234567" />
+        </div>
+      </div>
+
+      {priorBookings.length > 0 && (
+        <div className="text-xs text-goldLight/70 bg-ink2/60 rounded-lg px-3 py-2 amulet-border">
+          此電話曾登記:{priorBookings.slice(0,3).map((b,i) => (
+            <span key={i} className="inline-block mr-2">{b.date} {b.slot}</span>
+          ))}
+        </div>
+      )}
+
+      <div>
+        <label className="block text-xs text-goldLight/80 mb-1">日期</label>
+        <input type="date" value={date} min={todayStr()} onChange={e => setDate(e.target.value)}
+          className="w-full bg-ink2 amulet-border rounded-lg px-3 py-2.5 text-paper outline-none focus:ring-1 focus:ring-gold" />
+        {isBlackout && (
+          <div className="text-xs text-vermilion mt-1.5">此日暫停接受登記,請另選日子。</div>
+        )}
+      </div>
+
+      <div>
+        <label className="block text-xs text-goldLight/80 mb-2">時段</label>
+        <SlotGrid slots={slots} bookedSlots={bookedSlots} selected={selectedSlot}
+          onSelect={setSelectedSlot} disabled={isBlackout} />
+      </div>
+
+      {status && (
+        <div className={"text-sm rounded-lg px-3 py-2.5 " + (status.type === 'ok'
+          ? "bg-vermilion/20 text-goldLight border border-gold/40"
+          : "bg-vermilionDark/30 text-paper border border-vermilion/60")}>
+          {status.msg}
+        </div>
+      )}
+
+      <button type="submit" disabled={submitting || isBlackout}
+        className="w-full bg-vermilion hover:bg-vermilionDark disabled:opacity-50 text-paper font-medium rounded-lg py-3 border border-gold/60 transition-colors">
+        {submitting ? '處理緊…' : '確認登記'}
+      </button>
+    </form>
+  );
+}
+
+function LookupPanel() {
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [results, setResults] = useState(null);
+  const [ascResults, setAscResults] = useState(null);
+  const [error, setError] = useState("");
+
+  async function handleSearch(e) {
+    e.preventDefault();
+    setError("");
+    setResults(null);
+    setAscResults(null);
+    if (!phone.trim()) {
+      setError('請輸入電話。');
+      return;
+    }
+    setLoading(true);
+    try {
+      const snap = await db.collection('bookings').where('phone', '==', phone.trim()).get();
+      let list = [];
+      snap.forEach(doc => list.push(doc.data()));
+      if (name.trim()) {
+        list = list.filter(b => b.name && b.name.includes(name.trim()));
+      }
+      list = list.filter(b => b.status !== 'cancelled');
+      list.sort((a,b) => (a.date+a.slot) < (b.date+b.slot) ? 1 : -1);
+      setResults(list);
+
+      const ascSnap = await db.collection('ascensions').where('phone', '==', phone.trim()).get();
+      let ascList = [];
+      ascSnap.forEach(doc => ascList.push(doc.data()));
+      if (name.trim()) {
+        ascList = ascList.filter(a => a.name && a.name.includes(name.trim()));
+      }
+      ascList.sort((a,b) => (a.date+a.slot) < (b.date+b.slot) ? 1 : -1);
+      setAscResults(ascList);
+    } catch (err) {
+      console.error(err);
+      setError('查詢失敗,請稍後再試。');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <form onSubmit={handleSearch} className="space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          <input value={name} onChange={e => setName(e.target.value)}
+            className="w-full bg-ink2 amulet-border rounded-lg px-3 py-2.5 text-paper placeholder-ash/60 outline-none focus:ring-1 focus:ring-gold"
+            placeholder="姓(可留空)" />
+          <input value={phone} onChange={e => setPhone(e.target.value.replace(/[^\d]/g,''))}
+            inputMode="numeric"
+            className="w-full bg-ink2 amulet-border rounded-lg px-3 py-2.5 text-paper placeholder-ash/60 outline-none focus:ring-1 focus:ring-gold"
+            placeholder="電話" />
+        </div>
+        <button type="submit" disabled={loading}
+          className="w-full bg-ink3 hover:bg-ink2 text-goldLight font-medium rounded-lg py-3 border border-gold/50 transition-colors">
+          {loading ? '查詢緊…' : '查詢已登記時段'}
+        </button>
+      </form>
+
+      {error && <div className="text-sm text-vermilion">{error}</div>}
+
+      {results && (
+        results.length === 0 ? (
+          <div className="text-sm text-ash text-center py-4">未搵到相關登記記錄。</div>
+        ) : (
+          <div className="space-y-2">
+            {results.map((b, i) => (
+              <div key={i} className="amulet-border bg-ink2 rounded-lg px-4 py-3 flex items-center justify-between">
+                <div>
+                  <div className="text-paper text-sm font-medium">{b.name}</div>
+                  <div className="text-goldLight/70 text-xs">{b.date} · {b.slot}</div>
+                </div>
+                {b.checkedIn && (
+                  <span className="text-xs text-goldLight bg-vermilion/30 border border-gold/40 rounded-full px-2.5 py-1">已簽到</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )
+      )}
+
+      {ascResults && ascResults.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-xs text-goldLight/80">升運記錄</div>
+          {ascResults.map((a, i) => (
+            <div key={i} className="amulet-border bg-ink2 rounded-lg px-4 py-3">
+              <div className="text-paper text-sm font-medium">{a.name}</div>
+              <div className="text-goldLight/70 text-xs">升運:{a.date} · {a.slot}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AscensionForm({ booking, onDone }) {
+  const [date, setDate] = useState(todayStr());
+  const [slot, setSlot] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  async function submit() {
+    if (!slot) return;
+    setSaving(true);
+    try {
+      await db.collection('ascensions').add({
+        name: booking.name,
+        phone: booking.phone,
+        date,
+        slot,
+        bookingId: booking.id,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      await db.collection('bookings').doc(booking.id).update({ ascensionRecorded: true });
+      setSaved(true);
+      onDone && onDone();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (saved) {
+    return <div className="text-xs text-goldLight mt-2">升運記錄已保存:{date} {slot}</div>;
+  }
+
+  return (
+    <div className="mt-3 bg-ink/60 rounded-lg p-3 border border-gold/30">
+      <div className="text-xs text-goldLight/80 mb-2">記錄升運日期同時段</div>
+      <input type="date" value={date} onChange={e => setDate(e.target.value)}
+        className="w-full bg-ink2 amulet-border rounded-lg px-3 py-2 text-sm text-paper mb-2 outline-none" />
+      <div className="grid grid-cols-4 gap-1.5 mb-2">
+        {ASCENSION_SLOTS.map(s => (
+          <button key={s} type="button" onClick={() => setSlot(s)}
+            className={"text-xs py-2 rounded-md border " + (slot === s ? "bg-vermilion border-gold text-paper" : "border-ash/50 text-paper bg-ink2")}>
+            {s}
+          </button>
+        ))}
+      </div>
+      <button onClick={submit} disabled={!slot || saving}
+        className="w-full bg-vermilion disabled:opacity-50 text-paper text-sm rounded-lg py-2 border border-gold/50">
+        {saving ? '保存緊…' : '保存升運記錄'}
+      </button>
+    </div>
+  );
+}
+
+function CheckinView() {
+  const [bookings, setBookings] = useState([]);
+  const date = todayStr();
+
+  useEffect(() => {
+    const unsub = db.collection('bookings').where('date', '==', date)
+      .onSnapshot(snap => {
+        const list = [];
+        snap.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+        list.sort((a,b) => a.slot < b.slot ? -1 : 1);
+        setBookings(list.filter(b => b.status !== 'cancelled'));
+      });
+    return () => unsub();
+  }, [date]);
+
+  async function checkIn(b) {
+    try {
+      await db.collection('bookings').doc(b.id).update({ status: 'checked-in', checkedIn: true });
+    } catch (err) {
+      console.error(err);
+      alert('簽到失敗,請通知職員。');
+    }
+  }
+
+  return (
+    <div className="min-h-screen px-4 py-10 flex flex-col items-center">
+      <div className="flex items-center gap-3 mb-6">
+        <Seal />
+        <div>
+          <h1 className="font-serifTC font-bold text-2xl text-paper">今日名單</h1>
+          <p className="text-goldLight/70 text-xs mt-1">{date}</p>
+        </div>
+      </div>
+      <div className="max-w-md w-full space-y-3">
+        {bookings.length === 0 && (
+          <div className="text-ash text-sm text-center py-10">今日暫時未有登記。</div>
+        )}
+        {bookings.map(b => (
+          <div key={b.id} className="amulet-border bg-ink3/60 rounded-xl p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-paper font-medium">{b.name}</div>
+                <div className="text-goldLight/70 text-xs">{b.slot}</div>
+              </div>
+              {b.status === 'booked' ? (
+                <button onClick={() => checkIn(b)}
+                  className="bg-vermilion text-paper text-sm rounded-lg px-4 py-2 border border-gold/50">
+                  簽到
+                </button>
+              ) : (
+                <span className="text-xs text-goldLight bg-vermilion/30 border border-gold/40 rounded-full px-3 py-1.5">已簽到</span>
+              )}
+            </div>
+            {b.status === 'checked-in' && !b.ascensionRecorded && (
+              <AscensionForm booking={b} onDone={() => {}} />
+            )}
+            {b.ascensionRecorded && (
+              <div className="text-xs text-ash mt-2">升運記錄已保存</div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AdminLogin() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function login(e) {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      await auth.signInWithEmailAndPassword(email.trim(), password);
+    } catch (err) {
+      setError('登入失敗:電郵或密碼錯誤。');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center px-4">
+      <form onSubmit={login} className="max-w-sm w-full bg-ink3/60 amulet-border rounded-xl p-6 space-y-3">
+        <h1 className="font-serifTC font-bold text-xl text-paper text-center mb-2">管理員登入</h1>
+        <input value={email} onChange={e => setEmail(e.target.value)} placeholder="admin1@chitakdin.local"
+          className="w-full bg-ink2 amulet-border rounded-lg px-3 py-2.5 text-paper placeholder-ash/60 outline-none" />
+        <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="密碼"
+          className="w-full bg-ink2 amulet-border rounded-lg px-3 py-2.5 text-paper placeholder-ash/60 outline-none" />
+        {error && <div className="text-xs text-vermilion">{error}</div>}
+        <button disabled={loading}
+          className="w-full bg-vermilion text-paper rounded-lg py-2.5 border border-gold/50">
+          {loading ? '登入緊…' : '登入'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function AdminBookings() {
+  const [date, setDate] = useState(todayStr());
+  const [bookings, setBookings] = useState([]);
+  const [slots, setSlots] = useState(DEFAULT_SLOTS);
+  const [addName, setAddName] = useState("");
+  const [addPhone, setAddPhone] = useState("");
+  const [addSlot, setAddSlot] = useState("");
+  const [msg, setMsg] = useState("");
+  const [searchPhone, setSearchPhone] = useState("");
+  const [searchResults, setSearchResults] = useState(null);
+  const [searchAsc, setSearchAsc] = useState([]);
+  const [searching, setSearching] = useState(false);
+
+  useEffect(() => {
+    const unsub = db.collection('bookings').where('date', '==', date)
+      .onSnapshot(snap => {
+        const list = [];
+        snap.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+        list.sort((a,b) => a.slot < b.slot ? -1 : 1);
+        setBookings(list);
+      });
+    db.collection('slotConfig').doc('default').get().then(doc => {
+      if (doc.exists && doc.data().slots) setSlots(doc.data().slots);
+    });
+    return () => unsub();
+  }, [date]);
+
+  async function cancelBooking(b) {
+    if (!confirm('確定取消呢個預約?')) return;
+    await db.collection('bookings').doc(b.id).update({ status: 'cancelled' });
+    await db.collection('slotLocks').doc(`${b.date}_${b.slot}`).delete().catch(() => {});
+  }
+
+  async function checkInBooking(id) {
+    await db.collection('bookings').doc(id).update({ status: 'checked-in', checkedIn: true });
+  }
+
+  async function searchByPhone() {
+    if (!searchPhone.trim()) return;
+    setSearching(true);
+    setSearchResults(null);
+    try {
+      const snap = await db.collection('bookings').where('phone', '==', searchPhone.trim()).get();
+      const list = [];
+      snap.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+      list.sort((a,b) => (a.date+a.slot) < (b.date+b.slot) ? 1 : -1);
+      setSearchResults(list);
+
+      const ascSnap = await db.collection('ascensions').where('phone', '==', searchPhone.trim()).get();
+      const ascList = [];
+      ascSnap.forEach(doc => ascList.push(doc.data()));
+      ascList.sort((a,b) => (a.date+a.slot) < (b.date+b.slot) ? 1 : -1);
+      setSearchAsc(ascList);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSearching(false);
+    }
+  }
+
+  async function cancelFromSearch(b) {
+    if (!confirm('確定取消呢個預約?')) return;
+    await db.collection('bookings').doc(b.id).update({ status: 'cancelled' });
+    await db.collection('slotLocks').doc(`${b.date}_${b.slot}`).delete().catch(() => {});
+    searchByPhone();
+  }
+
+  async function addManual(e) {
+    e.preventDefault();
+    setMsg("");
+    if (!addName.trim() || !addPhone.trim() || !addSlot) {
+      setMsg('請填妥全部欄位。');
+      return;
+    }
+    try {
+      await db.runTransaction(async (t) => {
+        const lockRef = db.collection('slotLocks').doc(`${date}_${addSlot}`);
+        const lockSnap = await t.get(lockRef);
+        if (lockSnap.exists) {
+          throw new Error('SLOT_TAKEN');
+        }
+        const ref = db.collection('bookings').doc();
+        t.set(ref, {
+          name: addName.trim(), phone: addPhone.trim(), date, slot: addSlot,
+          status: 'booked', checkedIn: false,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        t.set(lockRef, {
+          bookingId: ref.id, name: addName.trim(), phone: addPhone.trim(),
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      });
+      setAddName(""); setAddPhone(""); setAddSlot("");
+      setMsg('已加入。');
+    } catch (err) {
+      setMsg(err.message === 'SLOT_TAKEN' ? '呢個時段已經有人。' : `加入失敗:${err.code || err.message}`);
+    }
+  }
+
+  const bookedSet = new Set(bookings.filter(b => b.status !== 'cancelled').map(b => b.slot));
+
+  return (
+    <div className="space-y-6">
+      <div className="amulet-border bg-ink2/50 rounded-lg p-4 space-y-2">
+        <div className="text-xs text-goldLight/80">搜尋客人(電話)睇返所有預約記錄</div>
+        <div className="flex gap-2">
+          <input value={searchPhone} onChange={e => setSearchPhone(e.target.value.replace(/[^\d]/g,''))}
+            placeholder="輸入電話" inputMode="numeric"
+            className="flex-1 bg-ink2 amulet-border rounded-lg px-3 py-2 text-sm text-paper outline-none" />
+          <button onClick={searchByPhone} disabled={searching}
+            className="text-sm bg-vermilion text-paper rounded-lg px-4 py-2 border border-gold/50 whitespace-nowrap">
+            {searching ? '搜尋緊…' : '搜尋'}
+          </button>
+        </div>
+        {searchResults && (
+          searchResults.length === 0 ? (
+            <div className="text-xs text-ash">未搵到呢個電話嘅預約記錄。</div>
+          ) : (
+            <div className="space-y-1.5 pt-1">
+              {searchResults.map(b => (
+                <div key={b.id} className="flex items-center justify-between text-sm bg-ink3/50 rounded-lg px-3 py-2">
+                  <div>
+                    <span className="text-paper">{b.name}</span>
+                    <span className="text-goldLight/70 text-xs ml-2">{b.date} · {b.slot} · {b.status}</span>
+                  </div>
+                  {b.status !== 'cancelled' && (
+                    <button onClick={() => cancelFromSearch(b)} className="text-xs text-vermilion border border-vermilion/50 rounded-lg px-2.5 py-1">取消</button>
+                  )}
+                </div>
+              ))}
+              {searchAsc.length > 0 && (
+                <div className="pt-1">
+                  <div className="text-xs text-goldLight/80 mb-1">升運記錄</div>
+                  {searchAsc.map((a,i) => (
+                    <div key={i} className="text-xs text-goldLight/70 bg-ink3/40 rounded-lg px-3 py-1.5 mb-1">
+                      {a.date} · {a.slot}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        )}
+      </div>
+
+      <input type="date" value={date} onChange={e => setDate(e.target.value)}
+        className="bg-ink2 amulet-border rounded-lg px-3 py-2 text-paper outline-none" />
+
+      <div className="space-y-2">
+        {bookings.length === 0 && <div className="text-ash text-sm">呢日暫時未有登記。</div>}
+        {bookings.map(b => (
+          <div key={b.id} className="amulet-border bg-ink3/50 rounded-lg px-4 py-3 flex items-center justify-between">
+            <div>
+              <div className="text-paper text-sm">{b.name} · {b.phone}</div>
+              <div className="text-goldLight/70 text-xs">{b.slot} · {b.status}{b.ascensionRecorded ? ' · 已預約升運' : ''}</div>
+            </div>
+            <div className="flex gap-2">
+              {b.status === 'booked' && (
+                <button onClick={() => checkInBooking(b.id)} className="text-xs text-goldLight border border-gold/50 rounded-lg px-3 py-1.5">簽到</button>
+              )}
+              {b.status !== 'cancelled' && (
+                <button onClick={() => cancelBooking(b)} className="text-xs text-vermilion border border-vermilion/50 rounded-lg px-3 py-1.5">取消</button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <form onSubmit={addManual} className="amulet-border bg-ink2/50 rounded-lg p-4 space-y-2">
+        <div className="text-xs text-goldLight/80">手動加人</div>
+        <div className="grid grid-cols-2 gap-2">
+          <input value={addName} onChange={e => setAddName(e.target.value)} placeholder="姓"
+            className="bg-ink2 amulet-border rounded-lg px-3 py-2 text-sm text-paper outline-none" />
+          <input value={addPhone} onChange={e => setAddPhone(e.target.value.replace(/[^\d]/g,''))} placeholder="電話"
+            className="bg-ink2 amulet-border rounded-lg px-3 py-2 text-sm text-paper outline-none" />
+        </div>
+        <div className="grid grid-cols-3 gap-1.5">
+          {slots.map(s => (
+            <button key={s} type="button" onClick={() => setAddSlot(s)} disabled={bookedSet.has(s)}
+              className={"text-xs py-2 rounded-md border " + (bookedSet.has(s) ? "border-ash/30 text-ash/50 cursor-not-allowed" : addSlot === s ? "bg-vermilion border-gold text-paper" : "border-ash/50 text-paper")}>
+              {s}
+            </button>
+          ))}
+        </div>
+        {msg && <div className="text-xs text-goldLight/80">{msg}</div>}
+        <button className="w-full bg-vermilion text-paper text-sm rounded-lg py-2 border border-gold/50">加入名單</button>
+      </form>
+    </div>
+  );
+}
+
+function AdminSettings() {
+  const [slots, setSlots] = useState(DEFAULT_SLOTS.join(', '));
+  const [blackout, setBlackout] = useState([]);
+  const [blackoutStart, setBlackoutStart] = useState("");
+  const [blackoutEnd, setBlackoutEnd] = useState("");
+  const [announcement, setAnnouncement] = useState("");
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    db.collection('slotConfig').doc('default').get().then(doc => {
+      if (doc.exists && doc.data().slots) setSlots(doc.data().slots.join(', '));
+    });
+    db.collection('announcements').doc('current').get().then(doc => {
+      if (doc.exists) setAnnouncement(doc.data().text || "");
+    });
+    const unsub = db.collection('blackoutDates').onSnapshot(snap => {
+      const list = [];
+      snap.forEach(doc => list.push(doc.id));
+      list.sort();
+      setBlackout(list);
+    });
+    return () => unsub();
+  }, []);
+
+  async function saveSlots() {
+    const arr = slots.split(',').map(s => s.trim()).filter(Boolean);
+    await db.collection('slotConfig').doc('default').set({ slots: arr });
+    setMsg('時段已更新。');
+  }
+
+  async function addBlackout() {
+    if (!blackoutStart) return;
+    const end = blackoutEnd || blackoutStart;
+    if (end < blackoutStart) { setMsg('結束日期唔可以早過開始日期。'); return; }
+    const batch = db.batch();
+    let cur = new Date(blackoutStart + 'T00:00:00');
+    const endD = new Date(end + 'T00:00:00');
+    while (cur <= endD) {
+      const id = ymd(cur);
+      batch.set(db.collection('blackoutDates').doc(id), { createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+      cur.setDate(cur.getDate() + 1);
+    }
+    await batch.commit();
+    setBlackoutStart(""); setBlackoutEnd("");
+    setMsg('已lock咗選定嘅日子。');
+  }
+
+  async function removeBlackout(d) {
+    await db.collection('blackoutDates').doc(d).delete();
+  }
+
+  async function saveAnnouncement() {
+    await db.collection('announcements').doc('current').set({ text: announcement });
+    setMsg('公告已更新。');
+  }
+
+  return (
+    <div className="space-y-8">
+      <div>
+        <div className="text-xs text-goldLight/80 mb-2">預約時段(用逗號分隔)</div>
+        <input value={slots} onChange={e => setSlots(e.target.value)}
+          className="w-full bg-ink2 amulet-border rounded-lg px-3 py-2 text-sm text-paper outline-none mb-2" />
+        <button onClick={saveSlots} className="text-sm bg-vermilion text-paper rounded-lg px-4 py-2 border border-gold/50">儲存時段</button>
+      </div>
+
+      <div>
+        <div className="text-xs text-goldLight/80 mb-2">Lock日期(唔接受登記,可以揀一個範圍)</div>
+        <div className="flex gap-2 mb-2 items-center">
+          <input type="date" value={blackoutStart} onChange={e => setBlackoutStart(e.target.value)}
+            className="flex-1 bg-ink2 amulet-border rounded-lg px-3 py-2 text-sm text-paper outline-none" placeholder="開始" />
+          <span className="text-ash text-xs">至</span>
+          <input type="date" value={blackoutEnd} onChange={e => setBlackoutEnd(e.target.value)}
+            className="flex-1 bg-ink2 amulet-border rounded-lg px-3 py-2 text-sm text-paper outline-none" placeholder="結束(可留空即單日)" />
+          <button onClick={addBlackout} className="text-sm bg-vermilion text-paper rounded-lg px-4 py-2 border border-gold/50 whitespace-nowrap">Lock</button>
+        </div>
+        <div className="space-y-1.5">
+          {blackout.map(d => (
+            <div key={d} className="flex items-center justify-between text-sm bg-ink2/60 rounded-lg px-3 py-2">
+              <span className="text-paper">{d}</span>
+              <button onClick={() => removeBlackout(d)} className="text-xs text-vermilion">解鎖</button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div className="text-xs text-goldLight/80 mb-2">公告(顯示喺客人登記頁面)</div>
+        <textarea value={announcement} onChange={e => setAnnouncement(e.target.value)} rows={3}
+          className="w-full bg-ink2 amulet-border rounded-lg px-3 py-2 text-sm text-paper outline-none mb-2" />
+        <button onClick={saveAnnouncement} className="text-sm bg-vermilion text-paper rounded-lg px-4 py-2 border border-gold/50">儲存公告</button>
+      </div>
+
+      {msg && <div className="text-xs text-goldLight/80">{msg}</div>}
+    </div>
+  );
+}
+
+function AdminStats() {
+  const [date, setDate] = useState(todayStr());
+  const [bookings, setBookings] = useState([]);
+  const [ascensions, setAscensions] = useState([]);
+
+  useEffect(() => {
+    const unsub1 = db.collection('bookings').where('date', '==', date).onSnapshot(snap => {
+      const list = [];
+      snap.forEach(doc => list.push(doc.data()));
+      setBookings(list.filter(b => b.status !== 'cancelled'));
+    });
+    const unsub2 = db.collection('ascensions').where('date', '==', date).onSnapshot(snap => {
+      const list = [];
+      snap.forEach(doc => list.push(doc.data()));
+      setAscensions(list);
+    });
+    return () => { unsub1(); unsub2(); };
+  }, [date]);
+
+  const bySlot = useMemo(() => {
+    const m = {};
+    bookings.forEach(b => { m[b.slot] = (m[b.slot] || 0) + 1; });
+    return m;
+  }, [bookings]);
+
+  return (
+    <div className="space-y-6">
+      <input type="date" value={date} onChange={e => setDate(e.target.value)}
+        className="bg-ink2 amulet-border rounded-lg px-3 py-2 text-paper outline-none" />
+
+      <div>
+        <div className="text-xs text-goldLight/80 mb-2">每時段人數(總數:{bookings.length})</div>
+        <div className="space-y-1.5">
+          {Object.keys(bySlot).sort().map(s => (
+            <div key={s} className="flex justify-between text-sm bg-ink2/60 rounded-lg px-3 py-2">
+              <span className="text-paper">{s}</span>
+              <span className="text-goldLight">{bySlot[s]} 人</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div className="text-xs text-goldLight/80 mb-2">升運名單({ascensions.length})</div>
+        <div className="space-y-1.5">
+          {ascensions.map((a, i) => (
+            <div key={i} className="flex justify-between text-sm bg-ink2/60 rounded-lg px-3 py-2">
+              <div>
+                <span className="text-paper">{a.name}</span>
+                <span className="text-ash text-xs ml-2">{a.phone}</span>
+              </div>
+              <span className="text-goldLight/80">{a.slot}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AdminView() {
+  const [user, setUser] = useState(undefined);
+  const [tab, setTab] = useState('bookings');
+
+  useEffect(() => auth.onAuthStateChanged(setUser), []);
+
+  if (user === undefined) return null;
+  if (user === null) return <AdminLogin />;
+
+  return (
+    <div className="min-h-screen px-4 py-10 flex flex-col items-center">
+      <div className="flex items-center justify-between max-w-2xl w-full mb-6">
+        <div className="flex items-center gap-3">
+          <Seal />
+          <h1 className="font-serifTC font-bold text-2xl text-paper">管理員後台</h1>
+        </div>
+        <button onClick={() => auth.signOut()} className="text-xs text-ash border border-ash/40 rounded-lg px-3 py-1.5">登出</button>
+      </div>
+
+      <div className="max-w-2xl w-full">
+        <div className="flex mb-5 rounded-lg overflow-hidden border border-gold/40 text-sm">
+          {[['bookings','預約管理'],['settings','時段/公告'],['stats','統計/升運']].map(([k,label]) => (
+            <button key={k} onClick={() => setTab(k)}
+              className={"flex-1 py-2.5 font-medium " + (tab === k ? "bg-vermilion text-paper" : "bg-ink2 text-goldLight/70")}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="bg-ink3/60 amulet-border rounded-xl p-5">
+          {tab === 'bookings' && <AdminBookings />}
+          {tab === 'settings' && <AdminSettings />}
+          {tab === 'stats' && <AdminStats />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [route, setRoute] = useState(window.location.hash);
+  useEffect(() => {
+    const onHash = () => setRoute(window.location.hash);
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  if (route === '#/checkin') return <CheckinView />;
+  if (route === '#/admin') return <AdminView />;
+  return <CustomerView />;
+}
+
+function CustomerView() {
+  const [tab, setTab] = useState('register');
+  const [slots, setSlots] = useState(DEFAULT_SLOTS);
+  const [blackoutSet, setBlackoutSet] = useState(new Set());
+  const [announcement, setAnnouncement] = useState("");
+
+  useEffect(() => {
+    db.collection('slotConfig').doc('default').get().then(doc => {
+      if (doc.exists && Array.isArray(doc.data().slots) && doc.data().slots.length) {
+        setSlots(doc.data().slots);
+      }
+    }).catch(() => {});
+
+    const unsubBlackout = db.collection('blackoutDates').onSnapshot(snap => {
+      const s = new Set();
+      snap.forEach(doc => s.add(doc.id));
+      setBlackoutSet(s);
+    }, () => {});
+
+    db.collection('announcements').doc('current').get().then(doc => {
+      if (doc.exists && doc.data().text) setAnnouncement(doc.data().text);
+    }).catch(() => {});
+
+    return () => unsubBlackout();
+  }, []);
+
+  return (
+    <div className="min-h-screen px-4 py-10 md:py-16 flex flex-col items-center">
+      <div className="flex items-center gap-4 mb-2">
+        <Seal />
+        <div>
+          <h1 className="font-serifTC font-bold text-2xl md:text-3xl text-paper tracking-wide">慈德殿</h1>
+          <p className="text-goldLight/70 text-xs md:text-sm mt-1">問卦 · 拜神 網上登記</p>
+        </div>
+      </div>
+
+      {announcement && (
+        <div className="max-w-md w-full mt-6 text-sm text-goldLight/90 bg-ink2/70 amulet-border rounded-lg px-4 py-3 text-center leading-relaxed">
+          {announcement}
+        </div>
+      )}
+
+      <div className="max-w-md w-full mt-8">
+        <div className="flex mb-5 rounded-lg overflow-hidden border border-gold/40">
+          <button onClick={() => setTab('register')}
+            className={"flex-1 py-2.5 text-sm font-medium transition-colors " + (tab === 'register' ? "bg-vermilion text-paper" : "bg-ink2 text-goldLight/70")}>
+            登記預約
+          </button>
+          <button onClick={() => setTab('lookup')}
+            className={"flex-1 py-2.5 text-sm font-medium transition-colors " + (tab === 'lookup' ? "bg-vermilion text-paper" : "bg-ink2 text-goldLight/70")}>
+            查詢已登記
+          </button>
+        </div>
+
+        <div className="bg-ink3/60 amulet-border rounded-xl p-5 md:p-6">
+          {tab === 'register'
+            ? <RegisterPanel slots={slots} blackoutSet={blackoutSet} announcement={announcement} />
+            : <LookupPanel />}
+        </div>
+      </div>
+
+      <p className="text-ash text-xs mt-10">慈德殿 · 網上預約系統</p>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
